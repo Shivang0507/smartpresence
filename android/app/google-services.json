@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "373012994951",
+    "firebase_url": "https://smartpresence-a2325-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "smartpresence-a2325",
+    "storage_bucket": "smartpresence-a2325.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:373012994951:android:b4c4ed4d8ab2423de6d122",
+        "android_client_info": {
+          "package_name": "com.example.smartpresence"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB9tNee51hwqNQH1LHgqxsNun-dXusUMfo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

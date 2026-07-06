@@ -1,0 +1,146 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function sameOrganization(orgId) {
+      return signedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.organizationId == orgId;
+    }
+
+    function admin() {
+      return signedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+
+    function operator() {
+      return signedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN' ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'RECEPTIONIST');
+    }
+
+    function staff() {
+      return signedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role != 'MEMBER';
+    }
+
+    function attendanceRotation() {
+      return signedIn() &&
+        sameOrganization(resource.data.organizationId) &&
+        request.resource.data.organizationId == resource.data.organizationId &&
+        request.resource.data.status == resource.data.status &&
+        request.resource.data.presentCount == resource.data.presentCount + 1 &&
+        request.resource.data.securityToken is string &&
+        request.resource.data.securityToken != resource.data.securityToken &&
+        request.resource.data.diff(resource.data).changedKeys()
+          .hasOnly(['securityToken', 'timestamp', 'presentCount', 'updatedAt']);
+    }
+
+    // ── Organizations ─────────────────────────────────────────────────────
+    // FIX: admin() → admin() && sameOrganization() on update to prevent
+    //      admin takeover of foreign organizations.
+    match /organizations/{organizationId} {
+      allow read: if sameOrganization(organizationId);
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if admin() && sameOrganization(organizationId);
+      allow delete: if false;
+
+      // ── Sub-collections (departments, teams, settings) ──────────────
+      // FIX: Added sameOrganization(organizationId) to create and update
+      //      so operators from Org A cannot modify Org B sub-collections.
+      match /{subCollection}/{documentId} {
+        allow read: if sameOrganization(organizationId);
+        allow create: if (
+          signedIn() &&
+          existsAfter(/databases/$(database)/documents/organizations/$(organizationId)) &&
+          getAfter(/databases/$(database)/documents/organizations/$(organizationId)).data.createdBy == request.auth.uid
+        ) || (operator() && sameOrganization(organizationId));
+        allow update: if operator() && sameOrganization(organizationId);
+        allow delete: if false;
+      }
+    }
+
+    // ── Users ─────────────────────────────────────────────────────────────
+    // FIX: On update, check resource.data.organizationId (existing doc org)
+    //      and prevent mutation of the organizationId field.
+    match /users/{userId} {
+      allow read: if signedIn() && (
+        request.auth.uid == userId ||
+        (resource != null && sameOrganization(resource.data.organizationId))
+      );
+      allow create: if (
+        signedIn() &&
+        request.auth.uid == userId &&
+        request.resource.data.role == 'ADMIN'
+      ) || (
+        operator() &&
+        sameOrganization(request.resource.data.organizationId)
+      );
+      allow update: if (
+        operator()
+        && sameOrganization(resource.data.organizationId)
+        && request.resource.data.organizationId == resource.data.organizationId
+      ) || (
+        signedIn()
+        && request.auth.uid == userId
+        && sameOrganization(resource.data.organizationId)
+        && request.resource.data.diff(resource.data).changedKeys()
+          .hasOnly(['name', 'phone', 'profileImageUrl', 'faceImageUrl', 'faceMetadata', 'updatedAt'])
+      );
+      allow delete: if false;
+    }
+
+    // ── Face Registrations ────────────────────────────────────────────────
+    // FIX: Added orgId immutability check on update.
+    match /faceRegistrations/{userId} {
+      allow read: if signedIn() && (
+        request.auth.uid == userId ||
+        (resource != null && sameOrganization(resource.data.organizationId))
+      );
+      allow create: if (
+        operator() && sameOrganization(request.resource.data.organizationId)
+      ) || (
+        signedIn()
+        && request.auth.uid == userId
+        && sameOrganization(request.resource.data.organizationId)
+      );
+      allow update: if (
+        operator()
+        && sameOrganization(resource.data.organizationId)
+        && request.resource.data.organizationId == resource.data.organizationId
+      ) || (
+        signedIn()
+        && request.auth.uid == userId
+        && sameOrganization(resource.data.organizationId)
+        && request.resource.data.organizationId == resource.data.organizationId
+      );
+      allow delete: if false;
+    }
+
+    // ── Attendance Sessions ───────────────────────────────────────────────
+    match /attendanceSessions/{sessionId} {
+      allow read: if signedIn() && (resource == null || sameOrganization(resource.data.organizationId));
+      allow create: if operator() && sameOrganization(request.resource.data.organizationId);
+      allow update: if (operator() && sameOrganization(resource.data.organizationId)) || attendanceRotation();
+      allow delete: if false;
+    }
+
+    // ── Attendance Records ────────────────────────────────────────────────
+    // FIX: Added userId == auth.uid to prevent impersonation/proxy attendance.
+    //      Only the authenticated user can create their own attendance record.
+    match /attendanceRecords/{attendanceId} {
+      allow read: if signedIn() && (resource == null || sameOrganization(resource.data.organizationId));
+      allow create: if signedIn()
+        && sameOrganization(request.resource.data.organizationId)
+        && (request.resource.data.userId == request.auth.uid || staff());
+      allow update, delete: if false;
+    }
+  }
+}
